@@ -1,0 +1,91 @@
+#!groovy
+@Library('jenkinslib') _
+
+def mytool = new ops.jk.tools()
+def app = new ops.jk.appDetail()
+def appMap = app.getAppMap()
+def projectName = app.getProjectName()
+def namespace = app.getNameSpace()
+
+pipeline {
+    environment {
+        CI_PROJECT_NAME = app.getProjectName()
+        IMG_TAG = app.getImgTag()
+        NAMESPACE = app.getNameSpace()
+        APPTYPE = app.getAppType()
+    }
+
+    options {
+        timestamps()
+        timeout(time: 20, unit: 'MINUTES')
+    }
+
+    agent {
+        docker {
+            image 'xxx.yy.com/library/maven:3.6-git-kube16'
+            registryUrl 'https://xxx.yy.com'
+            registryCredentialsId 'comp-image'
+            label app.getAppLabel()
+            args '-v /var/run/docker.sock:/var/run/docker.sock -v /home/admin/:/home/admin/'
+        }
+    }
+
+    parameters {
+        string(name: 'ROLLTAG', defaultValue: '', description: '是否回滚到之前的版本，输入镜像tag进行回滚')
+        choice(name: 'SONAR_SCANNER', choices: ['不执行', '执行'], description: '是否执行代码扫描')
+    }
+
+    stages {
+        stage('mvnPackage'){
+            when { expression { return ! params.ROLLTAG } }
+            steps {
+                script {
+                    app.mvnPackage()
+                }
+            }
+        }
+        stage('sonar-scanner'){
+            when { expression { return params.SONAR_SCANNER == '执行' } }
+            steps {
+                script {
+                    app.sonarScanner()
+                }
+            }
+        }
+        stage("Quality Gate") {
+            when { expression { return params.SONAR_SCANNER == '执行' } }
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+        stage('dockerBuild') {
+            steps {
+                script {
+                    app.dockerBuild()
+                }
+            }
+        }
+        stage('publish') {
+            steps {
+                script {
+                    app.publish()
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            script{
+                mytool.emailSuccess()
+            }
+        }
+        failure {
+            script{
+                mytool.emailFailure()
+            }
+        }
+    }
+}
